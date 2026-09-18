@@ -73,10 +73,74 @@ class OutputWaiter {
         this.tabTimeout = null;
         this.eolState = 0; // 0 = unset, 1 = detected, 2 = manual
         this.encodingState = 0; // 0 = unset, 1 = detected, 2 = manual
+        this.tabStates = {};
+        this._currentlyDisplayedTab = -1;
     }
 
     /**
      * Sets up the CodeMirror Editor
+     */
+    /**
+     * Gets the base CodeMirror extensions for the output editor
+     * @returns {Array}
+     */
+    getBaseExtensions() {
+        return [
+            // Editor extensions
+            EditorState.readOnly.of(true),
+            highlightSpecialChars({
+                render: renderSpecialChar, // Custom character renderer to handle special cases
+                addSpecialChars: /[\ue000-\uf8ff]/g // Add the Unicode Private Use Area which we use for some whitespace chars
+            }),
+            rectangularSelection(),
+            crosshairCursor(),
+            bracketMatching(),
+            highlightSelectionMatches(),
+            search({top: true}),
+            EditorState.allowMultipleSelections.of(true),
+
+                // Custom extensions
+            statusBar({
+                label: "Output",
+                timing: this.manager.timing,
+                tabNumGetter: function() {
+                    return this.manager.tabs.getActiveTab("output");
+                }.bind(this),
+                eolHandler: this.eolChange.bind(this),
+                chrEncHandler: this.chrEncChange.bind(this),
+                chrEncGetter: this.getChrEnc.bind(this),
+                getEncodingState: this.getEncodingState.bind(this),
+                getEOLState: this.getEOLState.bind(this),
+                htmlOutput: this.htmlOutput
+            }),
+            htmlPlugin(this.htmlOutput),
+            copyOverride(),
+
+                // Mutable state
+            this.outputEditorConf.lineWrapping.of(EditorView.lineWrapping),
+            this.outputEditorConf.eol.of(EditorState.lineSeparator.of("\n")),
+            this.outputEditorConf.drawSelection.of(drawSelection()),
+
+                // Keymap
+            keymap.of([
+                ...defaultKeymap,
+                ...searchKeymap
+            ]),
+
+                // Event listeners
+            EditorView.updateListener.of(e => {
+                if (e.selectionSet)
+                    this.manager.highlighter.selectionChange("output", e);
+                if (e.docChanged || this.docChanging) {
+                    this.docChanging = false;
+                    this.toggleLoader(false);
+                }
+            })
+        ];
+    }
+
+    /**
+     *
      */
     initEditor() {
         // Mutable extensions
@@ -88,58 +152,7 @@ class OutputWaiter {
 
         const initialState = EditorState.create({
             doc: null,
-            extensions: [
-                // Editor extensions
-                EditorState.readOnly.of(true),
-                highlightSpecialChars({
-                    render: renderSpecialChar, // Custom character renderer to handle special cases
-                    addSpecialChars: /[\ue000-\uf8ff]/g // Add the Unicode Private Use Area which we use for some whitespace chars
-                }),
-                rectangularSelection(),
-                crosshairCursor(),
-                bracketMatching(),
-                highlightSelectionMatches(),
-                search({top: true}),
-                EditorState.allowMultipleSelections.of(true),
-
-                // Custom extensions
-                statusBar({
-                    label: "Output",
-                    timing: this.manager.timing,
-                    tabNumGetter: function() {
-                        return this.manager.tabs.getActiveTab("output");
-                    }.bind(this),
-                    eolHandler: this.eolChange.bind(this),
-                    chrEncHandler: this.chrEncChange.bind(this),
-                    chrEncGetter: this.getChrEnc.bind(this),
-                    getEncodingState: this.getEncodingState.bind(this),
-                    getEOLState: this.getEOLState.bind(this),
-                    htmlOutput: this.htmlOutput
-                }),
-                htmlPlugin(this.htmlOutput),
-                copyOverride(),
-
-                // Mutable state
-                this.outputEditorConf.lineWrapping.of(EditorView.lineWrapping),
-                this.outputEditorConf.eol.of(EditorState.lineSeparator.of("\n")),
-                this.outputEditorConf.drawSelection.of(drawSelection()),
-
-                // Keymap
-                keymap.of([
-                    ...defaultKeymap,
-                    ...searchKeymap
-                ]),
-
-                // Event listeners
-                EditorView.updateListener.of(e => {
-                    if (e.selectionSet)
-                        this.manager.highlighter.selectionChange("output", e);
-                    if (e.docChanged || this.docChanging) {
-                        this.docChanging = false;
-                        this.toggleLoader(false);
-                    }
-                })
-            ]
+            extensions: this.getBaseExtensions()
         });
 
         if (this.outputEditorView) this.outputEditorView.destroy();
@@ -296,13 +309,6 @@ class OutputWaiter {
         }
         this.manager.timing.recordTime("outputDecodingEnd", tabNum);
 
-        // Turn drawSelection back on
-        this.outputEditorView.dispatch({
-            effects: this.outputEditorConf.drawSelection.reconfigure(
-                drawSelection()
-            )
-        });
-
         // Ensure we're not exceeding the maximum line length
         let wrap = this.app.options.wordWrap;
         const lineLengthThreshold = 131072; // 128KB
@@ -317,9 +323,6 @@ class OutputWaiter {
             }
         }
 
-        // If turning word wrap off, do it before we populate the editor for performance reasons
-        if (!wrap) this.setWordWrap(wrap);
-
         // Detect suitable EOL sequence
         this.detectEOLSequence(data);
 
@@ -328,20 +331,41 @@ class OutputWaiter {
         // of the editor. This is mainly with the above call to setWordWrap() in mind.
         setTimeout(() => {
             this.docChanging = true;
-            // Insert data into editor, overwriting any previous contents
-            this.outputEditorView.dispatch({
-                changes: {
-                    from: 0,
-                    to: this.outputEditorView.state.doc.length,
-                    insert: data
-                }
-            });
 
-            // If turning word wrap on, do it after we populate the editor
-            if (wrap)
-                setTimeout(() => {
-                    this.setWordWrap(wrap);
+            let state = (this._currentlyDisplayedTab === tabNum) ? this.outputEditorView.state : this.tabStates[tabNum];
+            const normalizedData = typeof data === "string" ? data.replace(/\r\n|\r/g, "\n") : data;
+            const normalizedState = state ? state.doc.toString() : "";
+
+            if (!state || normalizedState !== normalizedData) {
+                state = EditorState.create({
+                    doc: data,
+                    extensions: this.getBaseExtensions()
                 });
+                this.tabStates[tabNum] = state;
+            }
+
+            if (this.outputEditorView.state !== state) {
+                this.outputEditorView.setState(state);
+                this._currentlyDisplayedTab = tabNum;
+                this.tabScrolls = this.tabScrolls || {};
+                const scroll = this.tabScrolls[tabNum];
+                if (scroll) {
+                    requestAnimationFrame(() => {
+                        if (this.outputEditorView && this.outputEditorView.scrollDOM) {
+                            this.outputEditorView.scrollDOM.scrollTop = scroll.top;
+                            this.outputEditorView.scrollDOM.scrollLeft = scroll.left;
+                        }
+                    });
+                }
+            }
+
+            this.outputEditorView.dispatch({
+                effects: [
+                    this.outputEditorConf.drawSelection.reconfigure(drawSelection()),
+                    this.outputEditorConf.lineWrapping.reconfigure(wrap ? EditorView.lineWrapping : []),
+                    this.outputEditorConf.eol.reconfigure(EditorState.lineSeparator.of(this.getEOLSeq()))
+                ]
+            });
         });
     }
 
@@ -1078,6 +1102,16 @@ class OutputWaiter {
     changeTab(inputNum, changeInput = false) {
         if (!this.outputExists(inputNum)) return;
         const currentNum = this.manager.tabs.getActiveTab("output");
+
+        if (currentNum > 0 && this.outputEditorView && this.outputEditorView.scrollDOM) {
+            this.tabStates = this.tabStates || {};
+            this.tabStates[currentNum] = this.outputEditorView.state;
+            this.tabScrolls = this.tabScrolls || {};
+            this.tabScrolls[currentNum] = {
+                top: this.outputEditorView.scrollDOM.scrollTop,
+                left: this.outputEditorView.scrollDOM.scrollLeft
+            };
+        }
 
         this.hideMagicButton();
 

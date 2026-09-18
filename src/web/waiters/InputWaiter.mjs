@@ -64,6 +64,8 @@ class InputWaiter {
         this.inputChrEnc = 0;
         this.eolState = 0; // 0 = unset, 1 = detected, 2 = manual
         this.encodingState = 0; // 0 = unset, 1 = detected, 2 = manual
+        this.tabStates = {};
+        this._currentlyDisplayedTab = -1;
         this.initEditor();
 
         this.inputWorker = null;
@@ -86,6 +88,95 @@ class InputWaiter {
     /**
      * Sets up the CodeMirror Editor
      */
+    /**
+     * Gets the base CodeMirror extensions for the input editor
+     * @returns {Array}
+     */
+    getBaseExtensions() {
+        const self = this;
+        return [
+            // Editor extensions
+            history(),
+            highlightSpecialChars({
+                render: renderSpecialChar // Custom character renderer to handle special cases
+            }),
+            drawSelection(),
+            rectangularSelection(),
+            crosshairCursor(),
+            dropCursor(),
+            bracketMatching(),
+            highlightSelectionMatches(),
+            search({top: true}),
+            EditorState.allowMultipleSelections.of(true),
+
+            // Custom extensions
+            statusBar({
+                label: "Input",
+                eolHandler: this.eolChange.bind(this),
+                chrEncHandler: this.chrEncChange.bind(this),
+                chrEncGetter: this.getChrEnc.bind(this),
+                getEncodingState: this.getEncodingState.bind(this),
+                getEOLState: this.getEOLState.bind(this)
+            }),
+
+            // Mutable state
+            this.inputEditorConf.fileDetailsPanel.of([]),
+            this.inputEditorConf.lineWrapping.of(EditorView.lineWrapping),
+            this.inputEditorConf.eol.of(EditorState.lineSeparator.of("\n")),
+
+            // Keymap
+            keymap.of([
+                // Explicitly insert a tab rather than indenting the line
+                { key: "Tab", run: insertTab },
+                // Explicitly insert a new line (using the current EOL char) rather
+                // than messing around with indenting, which does not respect EOL chars
+                { key: "Enter", run: insertNewline },
+                ...historyKeymap,
+                ...defaultKeymap,
+                ...searchKeymap
+            ]),
+
+            // Event listeners
+            EditorView.updateListener.of(e => {
+                if (e.selectionSet)
+                    this.manager.highlighter.selectionChange("input", e);
+                if (e.docChanged && !this.silentInputChange)
+                    this.inputChange(e);
+                this.silentInputChange = false;
+            }),
+
+            // Event handlers
+            EditorView.domEventHandlers({
+                paste(event, view) {
+                    const clipboardData = event.clipboardData;
+                    const items = clipboardData.items;
+                    let files = [];
+                    for (let i = 0; i < items.length; i++) {
+                        const item = items[i];
+                        if (item.kind === "string") {
+                            // If there are any string items they should be preferred over
+                            // files.
+                            files = [];
+                            break;
+                        } else if (item.kind === "file") {
+                            files.push(item.getAsFile());
+                        }
+                    }
+                    if (files.length > 0) {
+                        // Prevent the default paste behavior, afterPaste will load the files instead
+                        event.preventDefault();
+                    }
+                    setTimeout(() => {
+                        self.afterPaste(files);
+                    });
+                }
+            })
+        ];
+    }
+
+    /**
+     *
+     */
     initEditor() {
         // Mutable extensions
         this.inputEditorConf = {
@@ -94,87 +185,9 @@ class InputWaiter {
             fileDetailsPanel: new Compartment
         };
 
-        const self = this;
         const initialState = EditorState.create({
             doc: null,
-            extensions: [
-                // Editor extensions
-                history(),
-                highlightSpecialChars({
-                    render: renderSpecialChar // Custom character renderer to handle special cases
-                }),
-                drawSelection(),
-                rectangularSelection(),
-                crosshairCursor(),
-                dropCursor(),
-                bracketMatching(),
-                highlightSelectionMatches(),
-                search({top: true}),
-                EditorState.allowMultipleSelections.of(true),
-
-                // Custom extensions
-                statusBar({
-                    label: "Input",
-                    eolHandler: this.eolChange.bind(this),
-                    chrEncHandler: this.chrEncChange.bind(this),
-                    chrEncGetter: this.getChrEnc.bind(this),
-                    getEncodingState: this.getEncodingState.bind(this),
-                    getEOLState: this.getEOLState.bind(this)
-                }),
-
-                // Mutable state
-                this.inputEditorConf.fileDetailsPanel.of([]),
-                this.inputEditorConf.lineWrapping.of(EditorView.lineWrapping),
-                this.inputEditorConf.eol.of(EditorState.lineSeparator.of("\n")),
-
-                // Keymap
-                keymap.of([
-                    // Explicitly insert a tab rather than indenting the line
-                    { key: "Tab", run: insertTab },
-                    // Explicitly insert a new line (using the current EOL char) rather
-                    // than messing around with indenting, which does not respect EOL chars
-                    { key: "Enter", run: insertNewline },
-                    ...historyKeymap,
-                    ...defaultKeymap,
-                    ...searchKeymap
-                ]),
-
-                // Event listeners
-                EditorView.updateListener.of(e => {
-                    if (e.selectionSet)
-                        this.manager.highlighter.selectionChange("input", e);
-                    if (e.docChanged && !this.silentInputChange)
-                        this.inputChange(e);
-                    this.silentInputChange = false;
-                }),
-
-                // Event handlers
-                EditorView.domEventHandlers({
-                    paste(event, view) {
-                        const clipboardData = event.clipboardData;
-                        const items = clipboardData.items;
-                        let files = [];
-                        for (let i = 0; i < items.length; i++) {
-                            const item = items[i];
-                            if (item.kind === "string") {
-                                // If there are any string items they should be preferred over
-                                // files.
-                                files = [];
-                                break;
-                            } else if (item.kind === "file") {
-                                files.push(item.getAsFile());
-                            }
-                        }
-                        if (files.length > 0) {
-                            // Prevent the default paste behavior, afterPaste will load the files instead
-                            event.preventDefault();
-                        }
-                        setTimeout(() => {
-                            self.afterPaste(files);
-                        });
-                    }
-                })
-            ]
+            extensions: this.getBaseExtensions()
         });
 
 
@@ -303,28 +316,50 @@ class InputWaiter {
             }
         }
 
-        // If turning word wrap off, do it before we populate the editor for performance reasons
-        if (!wrap) this.setWordWrap(wrap);
-
         // We use setTimeout here to delay the editor dispatch until the next event cycle,
         // ensuring all async actions have completed before attempting to set the contents
         // of the editor. This is mainly with the above call to setWordWrap() in mind.
         setTimeout(() => {
             // Insert data into editor, overwriting any previous contents
             this.silentInputChange = silent;
-            this.inputEditorView.dispatch({
-                changes: {
-                    from: 0,
-                    to: this.inputEditorView.state.doc.length,
-                    insert: data
-                }
-            });
+            const activeTab = this.manager.tabs.getActiveTab("input");
 
-            // If turning word wrap on, do it after we populate the editor
-            if (wrap)
-                setTimeout(() => {
-                    this.setWordWrap(wrap);
+            let state = (this._currentlyDisplayedTab === activeTab) ? this.inputEditorView.state : this.tabStates[activeTab];
+            const normalizedData = typeof data === "string" ? data.replace(/\r\n|\r/g, "\n") : data;
+            const normalizedState = state ? state.doc.toString() : "";
+
+            if (!state || normalizedState !== normalizedData) {
+                state = EditorState.create({
+                    doc: data,
+                    extensions: this.getBaseExtensions()
                 });
+                this.tabStates[activeTab] = state;
+            }
+
+            if (this.inputEditorView.state !== state) {
+                this.inputEditorView.setState(state);
+                this._currentlyDisplayedTab = activeTab;
+                this.tabScrolls = this.tabScrolls || {};
+                const scroll = this.tabScrolls[activeTab];
+                if (scroll) {
+                    requestAnimationFrame(() => {
+                        if (this.inputEditorView && this.inputEditorView.scrollDOM) {
+                            this.inputEditorView.scrollDOM.scrollTop = scroll.top;
+                            this.inputEditorView.scrollDOM.scrollLeft = scroll.left;
+                        }
+                    });
+                }
+            }
+
+            this.inputEditorView.dispatch({
+                effects: [
+                    this.inputEditorConf.lineWrapping.reconfigure(wrap ? EditorView.lineWrapping : []),
+                    this.inputEditorConf.eol.reconfigure(EditorState.lineSeparator.of(this.getEOLSeq())),
+                    this.inputEditorConf.fileDetailsPanel.reconfigure(
+                        this.fileDetails && this.fileDetails.fileDetails && !this.fileDetails.hidden ? fileDetailsPanel(this.fileDetails) : []
+                    )
+                ]
+            });
         });
     }
 
@@ -1257,6 +1292,17 @@ class InputWaiter {
      * @param {boolean} [changeOutput=false] - If true, also changes the output
      */
     changeTab(inputNum, changeOutput=false) {
+        const currentTab = this.manager.tabs.getActiveTab("input");
+        if (currentTab > 0 && this.inputEditorView && this.inputEditorView.scrollDOM) {
+            this.tabStates = this.tabStates || {};
+            this.tabStates[currentTab] = this.inputEditorView.state;
+            this.tabScrolls = this.tabScrolls || {};
+            this.tabScrolls[currentTab] = {
+                top: this.inputEditorView.scrollDOM.scrollTop,
+                left: this.inputEditorView.scrollDOM.scrollLeft
+            };
+        }
+
         if (this.manager.tabs.getTabItem(inputNum, "input") !== null) {
             this.manager.tabs.changeTab(inputNum, "input");
             this.inputWorker.postMessage({
