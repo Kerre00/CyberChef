@@ -316,50 +316,45 @@ class InputWaiter {
             }
         }
 
-        // We use setTimeout here to delay the editor dispatch until the next event cycle,
-        // ensuring all async actions have completed before attempting to set the contents
-        // of the editor. This is mainly with the above call to setWordWrap() in mind.
-        setTimeout(() => {
-            // Insert data into editor, overwriting any previous contents
-            this.silentInputChange = silent;
-            const activeTab = this.manager.tabs.getActiveTab("input");
+        // Update editor state with new data or restore cached state for the active tab
+        this.silentInputChange = silent;
+        const activeTab = this.manager.tabs.getActiveTab("input");
 
-            let state = (this._currentlyDisplayedTab === activeTab) ? this.inputEditorView.state : this.tabStates[activeTab];
-            const normalizedData = typeof data === "string" ? data.replace(/\r\n|\r/g, "\n") : data;
-            const normalizedState = state ? state.doc.toString() : "";
+        let state = (this._currentlyDisplayedTab === activeTab) ? this.inputEditorView.state : this.tabStates[activeTab];
+        const normalizedData = typeof data === "string" ? data.replace(/\r\n|\r/g, "\n") : data;
+        const normalizedState = state ? state.doc.toString() : "";
 
-            if (!state || normalizedState !== normalizedData) {
-                state = EditorState.create({
-                    doc: data,
-                    extensions: this.getBaseExtensions()
-                });
-                this.tabStates[activeTab] = state;
-            }
-
-            if (this.inputEditorView.state !== state) {
-                this.inputEditorView.setState(state);
-                this._currentlyDisplayedTab = activeTab;
-                this.tabScrolls = this.tabScrolls || {};
-                const scroll = this.tabScrolls[activeTab];
-                if (scroll) {
-                    requestAnimationFrame(() => {
-                        if (this.inputEditorView && this.inputEditorView.scrollDOM) {
-                            this.inputEditorView.scrollDOM.scrollTop = scroll.top;
-                            this.inputEditorView.scrollDOM.scrollLeft = scroll.left;
-                        }
-                    });
-                }
-            }
-
-            this.inputEditorView.dispatch({
-                effects: [
-                    this.inputEditorConf.lineWrapping.reconfigure(wrap ? EditorView.lineWrapping : []),
-                    this.inputEditorConf.eol.reconfigure(EditorState.lineSeparator.of(this.getEOLSeq())),
-                    this.inputEditorConf.fileDetailsPanel.reconfigure(
-                        this.fileDetails && this.fileDetails.fileDetails && !this.fileDetails.hidden ? fileDetailsPanel(this.fileDetails) : []
-                    )
-                ]
+        if (!state || normalizedState !== normalizedData) {
+            state = EditorState.create({
+                doc: data,
+                extensions: this.getBaseExtensions()
             });
+            this.tabStates[activeTab] = state;
+        }
+
+        if (this.inputEditorView.state !== state) {
+            this.inputEditorView.setState(state);
+            this._currentlyDisplayedTab = activeTab;
+            this.tabScrolls = this.tabScrolls || {};
+            const scroll = this.tabScrolls[activeTab];
+            if (scroll) {
+                requestAnimationFrame(() => {
+                    if (this.inputEditorView && this.inputEditorView.scrollDOM) {
+                        this.inputEditorView.scrollDOM.scrollTop = scroll.top;
+                        this.inputEditorView.scrollDOM.scrollLeft = scroll.left;
+                    }
+                });
+            }
+        }
+
+        this.inputEditorView.dispatch({
+            effects: [
+                this.inputEditorConf.lineWrapping.reconfigure(wrap ? EditorView.lineWrapping : []),
+                this.inputEditorConf.eol.reconfigure(EditorState.lineSeparator.of(this.getEOLSeq())),
+                this.inputEditorConf.fileDetailsPanel.reconfigure(
+                    this.fileDetails && this.fileDetails.fileDetails && !this.fileDetails.hidden ? fileDetailsPanel(this.fileDetails) : []
+                )
+            ]
         });
     }
 
@@ -1359,6 +1354,9 @@ class InputWaiter {
         this.manager.output.removeAllOutputs();
         this.manager.output.terminateZipWorker();
 
+        this.tabStates = {};
+        this.tabScrolls = {};
+
         this.eolState = 0;
         this.encodingState = 0;
         this.manager.output.eolState = 0;
@@ -1514,6 +1512,10 @@ class InputWaiter {
         if (this.manager.tabs.getTabItem(inputNum, "input") !== null) {
             refresh = true;
         }
+        
+        if (this.tabStates) delete this.tabStates[inputNum];
+        if (this.tabScrolls) delete this.tabScrolls[inputNum];
+
         this.inputWorker.postMessage({
             action: "removeInput",
             data: {

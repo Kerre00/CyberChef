@@ -139,10 +139,7 @@ class OutputWaiter {
         ];
     }
 
-    /**
-     *
-     */
-    initEditor() {
+initEditor() {
         // Mutable extensions
         this.outputEditorConf = {
             eol: new Compartment,
@@ -326,47 +323,42 @@ class OutputWaiter {
         // Detect suitable EOL sequence
         this.detectEOLSequence(data);
 
-        // We use setTimeout here to delay the editor dispatch until the next event cycle,
-        // ensuring all async actions have completed before attempting to set the contents
-        // of the editor. This is mainly with the above call to setWordWrap() in mind.
-        setTimeout(() => {
-            this.docChanging = true;
+        this.docChanging = true;
 
-            let state = (this._currentlyDisplayedTab === tabNum) ? this.outputEditorView.state : this.tabStates[tabNum];
-            const normalizedData = typeof data === "string" ? data.replace(/\r\n|\r/g, "\n") : data;
-            const normalizedState = state ? state.doc.toString() : "";
+        let state = (this._currentlyDisplayedTab === tabNum) ? this.outputEditorView.state : this.tabStates[tabNum];
+        const normalizedData = typeof data === "string" ? data.replace(/\r\n|\r/g, "\n") : data;
+        const normalizedState = state ? state.doc.toString() : "";
 
-            if (!state || normalizedState !== normalizedData) {
-                state = EditorState.create({
-                    doc: data,
-                    extensions: this.getBaseExtensions()
-                });
-                this.tabStates[tabNum] = state;
-            }
-
-            if (this.outputEditorView.state !== state) {
-                this.outputEditorView.setState(state);
-                this._currentlyDisplayedTab = tabNum;
-                this.tabScrolls = this.tabScrolls || {};
-                const scroll = this.tabScrolls[tabNum];
-                if (scroll) {
-                    requestAnimationFrame(() => {
-                        if (this.outputEditorView && this.outputEditorView.scrollDOM) {
-                            this.outputEditorView.scrollDOM.scrollTop = scroll.top;
-                            this.outputEditorView.scrollDOM.scrollLeft = scroll.left;
-                        }
-                    });
-                }
-            }
-
-            this.outputEditorView.dispatch({
-                effects: [
-                    this.outputEditorConf.drawSelection.reconfigure(drawSelection()),
-                    this.outputEditorConf.lineWrapping.reconfigure(wrap ? EditorView.lineWrapping : []),
-                    this.outputEditorConf.eol.reconfigure(EditorState.lineSeparator.of(this.getEOLSeq()))
-                ]
+        if (!state || normalizedState !== normalizedData) {
+            state = EditorState.create({
+                doc: data,
+                extensions: this.getBaseExtensions()
             });
-        });
+            this.tabStates[tabNum] = state;
+        }
+
+        if (this.outputEditorView.state !== state) {
+            this.outputEditorView.setState(state);
+            this._currentlyDisplayedTab = tabNum;
+            this.tabScrolls = this.tabScrolls || {};
+            const scroll = this.tabScrolls[tabNum];
+            if (scroll) {
+                requestAnimationFrame(() => {
+                    if (this.outputEditorView && this.outputEditorView.scrollDOM) {
+                        this.outputEditorView.scrollDOM.scrollTop = scroll.top;
+                        this.outputEditorView.scrollDOM.scrollLeft = scroll.left;
+                    }
+                });
+            }
+        }
+
+        this.outputEditorView.dispatch({
+            effects: [
+                this.outputEditorConf.drawSelection.reconfigure(drawSelection()),
+                this.outputEditorConf.lineWrapping.reconfigure(wrap ? EditorView.lineWrapping : []),
+                this.outputEditorConf.eol.reconfigure(EditorState.lineSeparator.of(this.getEOLSeq()))
+            ]
+        });   
     }
 
     /**
@@ -676,6 +668,9 @@ class OutputWaiter {
         if (!this.outputExists(inputNum)) return;
 
         delete this.outputs[inputNum];
+        
+        if (this.tabStates) delete this.tabStates[inputNum];
+        if (this.tabScrolls) delete this.tabScrolls[inputNum];
     }
 
     /**
@@ -683,6 +678,8 @@ class OutputWaiter {
      */
     removeAllOutputs() {
         this.outputs = {};
+        this.tabStates = {};
+        this.tabScrolls = {};
 
         const tabsList = document.getElementById("output-tabs");
         const tabsListChildren = tabsList.children;
